@@ -21,8 +21,10 @@ const DEFAULT_PREFS: DevicePreferences = {
 
 function getSupportedMimeType(): string {
   const types = [
+    'video/webm;codecs=h264,opus',
     'video/webm;codecs=vp9,opus',
     'video/webm;codecs=vp8,opus',
+    'video/webm;codecs=h264',
     'video/webm;codecs=vp9',
     'video/webm;codecs=vp8',
     'video/webm',
@@ -59,7 +61,7 @@ export function useScreenRecorder() {
 
       // 1. Get screen stream
       const screenStream = await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: 30 },
+        video: { frameRate: { ideal: 30, max: 60 } },
         audio: true,
       });
 
@@ -68,9 +70,14 @@ export function useScreenRecorder() {
       const constraints: MediaStreamConstraints = {};
 
       if (preferences.cameraEnabled) {
-        constraints.video = preferences.cameraId
-          ? { deviceId: { exact: preferences.cameraId } }
-          : true;
+        const camVideo: MediaTrackConstraints = {
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        };
+        if (preferences.cameraId) {
+          camVideo.deviceId = { exact: preferences.cameraId };
+        }
+        constraints.video = camVideo;
       }
       if (preferences.micEnabled) {
         constraints.audio = preferences.micId
@@ -119,7 +126,7 @@ export function useScreenRecorder() {
       const mimeType = getSupportedMimeType();
       const recorder = new MediaRecorder(finalStream, {
         mimeType,
-        videoBitsPerSecond: 5_000_000,
+        videoBitsPerSecond: 25_000_000,
       });
 
       chunksRef.current = [];
@@ -139,7 +146,7 @@ export function useScreenRecorder() {
       };
 
       recorderRef.current = recorder;
-      recorder.start(1000); // Collect data every second
+      recorder.start(250); // Collect data every 250ms for smoother output
 
       // Listen for screen share ended
       screenVideoTrack.onended = () => {

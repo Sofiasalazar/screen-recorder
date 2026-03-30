@@ -3,8 +3,9 @@ export class CanvasCompositor {
   private ctx: CanvasRenderingContext2D;
   private screenVideo: HTMLVideoElement;
   private cameraVideo: HTMLVideoElement | null = null;
-  private intervalId: number | null = null;
   private stream: MediaStream;
+  private rafId: number | null = null;
+  private destroyed = false;
 
   constructor(
     screenTrack: MediaStreamTrack,
@@ -34,43 +35,58 @@ export class CanvasCompositor {
     this.canvas.width = settings.width || 1920;
     this.canvas.height = settings.height || 1080;
 
-    // Start render loop (setInterval, not rAF -- must work in background tabs)
+    // Let the browser auto-capture at 30fps from the canvas.
+    // This is the most reliable approach -- no manual requestFrame() needed.
     this.stream = this.canvas.captureStream(30);
-    this.intervalId = window.setInterval(this.render, 33);
+
+    // Render loop via requestAnimationFrame only
+    this.scheduleRaf();
   }
 
+  private scheduleRaf = () => {
+    if (this.destroyed) return;
+    this.rafId = requestAnimationFrame(this.render);
+  };
+
   private render = () => {
+    if (this.destroyed) return;
+
     const { canvas, ctx, screenVideo, cameraVideo } = this;
 
-    if (screenVideo.readyState < 2) return;
+    if (screenVideo.readyState >= 2) {
+      // Disable smoothing for screen content -- keeps text and UI sharp
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(screenVideo, 0, 0, canvas.width, canvas.height);
 
-    // Draw screen full-canvas
-    ctx.drawImage(screenVideo, 0, 0, canvas.width, canvas.height);
+      // Draw camera overlay in bottom-left
+      if (cameraVideo && cameraVideo.readyState >= 2) {
+        // Re-enable smoothing for camera PIP (small overlay benefits from it)
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
 
-    // Draw camera overlay in bottom-left
-    if (cameraVideo && cameraVideo.readyState >= 2) {
-      const pipWidth = Math.round(canvas.width * 0.2);
-      const pipHeight = Math.round(pipWidth * (9 / 16));
-      const margin = 24;
-      const x = margin;
-      const y = canvas.height - pipHeight - margin;
-      const radius = 12;
+        const pipWidth = Math.round(canvas.width * 0.2);
+        const pipHeight = Math.round(pipWidth * (9 / 16));
+        const margin = 24;
+        const x = margin;
+        const y = canvas.height - pipHeight - margin;
+        const radius = 12;
 
-      // Rounded rectangle clip + draw
-      ctx.save();
-      ctx.beginPath();
-      ctx.roundRect(x, y, pipWidth, pipHeight, radius);
-      ctx.clip();
-      ctx.drawImage(cameraVideo, x, y, pipWidth, pipHeight);
-      ctx.restore();
+        ctx.save();
+        ctx.beginPath();
+        ctx.roundRect(x, y, pipWidth, pipHeight, radius);
+        ctx.clip();
+        ctx.drawImage(cameraVideo, x, y, pipWidth, pipHeight);
+        ctx.restore();
 
-      // Violet border
-      ctx.strokeStyle = '#8b5cf6';
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.roundRect(x, y, pipWidth, pipHeight, radius);
-      ctx.stroke();
+        ctx.strokeStyle = '#8b5cf6';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.roundRect(x, y, pipWidth, pipHeight, radius);
+        ctx.stroke();
+      }
     }
+
+    this.scheduleRaf();
   };
 
   getStream(): MediaStream {
@@ -78,9 +94,10 @@ export class CanvasCompositor {
   }
 
   destroy() {
-    if (this.intervalId !== null) {
-      clearInterval(this.intervalId);
-      this.intervalId = null;
+    this.destroyed = true;
+    if (this.rafId !== null) {
+      cancelAnimationFrame(this.rafId);
+      this.rafId = null;
     }
     this.screenVideo.srcObject = null;
     if (this.cameraVideo) {
