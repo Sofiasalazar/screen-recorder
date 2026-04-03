@@ -59,9 +59,13 @@ export function useScreenRecorder() {
     try {
       setState((s) => ({ ...s, error: null }));
 
-      // 1. Get screen stream
+      // 1. Get screen stream at maximum resolution
       const screenStream = await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: { ideal: 30, max: 60 } },
+        video: {
+          width: { ideal: 3840 },
+          height: { ideal: 2160 },
+          frameRate: { ideal: 30, max: 60 },
+        },
         audio: true,
       });
 
@@ -107,6 +111,9 @@ export function useScreenRecorder() {
       const compositor = new CanvasCompositor(screenVideoTrack, cameraVideoTrack);
       compositorRef.current = compositor;
 
+      // Wait for compositor to detect the actual capture resolution
+      await compositor.whenReady();
+
       // 4. Merge audio tracks
       const audioTracks: MediaStreamTrack[] = [];
       const screenAudio = screenStream.getAudioTracks();
@@ -122,11 +129,16 @@ export function useScreenRecorder() {
       if (mergedAudio) finalTracks.push(mergedAudio);
       const finalStream = new MediaStream(finalTracks);
 
-      // 6. Create MediaRecorder
+      // 6. Create MediaRecorder with bitrate scaled to actual resolution
       const mimeType = getSupportedMimeType();
+      const pixels = compositor.width * compositor.height;
+      let bitrate = 16_000_000; // 16 Mbps baseline for <= 1080p
+      if (pixels > 2_073_600) bitrate = 25_000_000; // > 1080p: 25 Mbps
+      if (pixels > 3_686_400) bitrate = 40_000_000; // > 1440p: 40 Mbps
+
       const recorder = new MediaRecorder(finalStream, {
         mimeType,
-        videoBitsPerSecond: 25_000_000,
+        videoBitsPerSecond: bitrate,
       });
 
       chunksRef.current = [];
