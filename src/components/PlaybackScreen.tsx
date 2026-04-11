@@ -12,7 +12,8 @@ export function PlaybackScreen({ recordedUrl, recordedBlob, onReset }: PlaybackS
     const a = document.createElement('a');
     a.href = recordedUrl;
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    a.download = `recording-${timestamp}.webm`;
+    const ext = recordedBlob.type.startsWith('video/mp4') ? 'mp4' : 'webm';
+    a.download = `recording-${timestamp}.${ext}`;
     a.click();
   };
 
