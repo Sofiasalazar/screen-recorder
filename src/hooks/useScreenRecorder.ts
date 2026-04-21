@@ -20,12 +20,10 @@ const DEFAULT_PREFS: DevicePreferences = {
 };
 
 function getSupportedMimeType(): string {
+  // WebM only. Chrome's MP4 MediaRecorder can silently produce blank
+  // video when encoding high-resolution canvas streams, so MP4 is
+  // intentionally excluded. Convert externally if MP4 is needed.
   const types = [
-    // MP4 only with AAC audio (the MP4 standard). MP4+Opus produces
-    // broken files that crash media players, so it is NOT included.
-    'video/mp4;codecs=avc1,mp4a.40.2',
-    'video/mp4;codecs=avc1,aac',
-    // WebM with H264 + Opus (wide playback support)
     'video/webm;codecs=h264,opus',
     'video/webm;codecs=vp9,opus',
     'video/webm;codecs=vp8,opus',
