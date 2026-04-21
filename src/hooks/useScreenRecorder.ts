@@ -21,11 +21,11 @@ const DEFAULT_PREFS: DevicePreferences = {
 
 function getSupportedMimeType(): string {
   const types = [
-    // Prefer MP4 (Chrome 116+) for universal playback
-    'video/mp4;codecs=avc1,opus',
+    // MP4 only with AAC audio (the MP4 standard). MP4+Opus produces
+    // broken files that crash media players, so it is NOT included.
+    'video/mp4;codecs=avc1,mp4a.40.2',
     'video/mp4;codecs=avc1,aac',
-    'video/mp4',
-    // Fallback to WebM (existing behavior, unchanged)
+    // WebM with H264 + Opus (wide playback support)
     'video/webm;codecs=h264,opus',
     'video/webm;codecs=vp9,opus',
     'video/webm;codecs=vp8,opus',
@@ -38,10 +38,6 @@ function getSupportedMimeType(): string {
     if (MediaRecorder.isTypeSupported(type)) return type;
   }
   return 'video/webm';
-}
-
-function getFileExtension(mimeType: string): string {
-  return mimeType.startsWith('video/mp4') ? 'mp4' : 'webm';
 }
 
 export function useScreenRecorder() {
