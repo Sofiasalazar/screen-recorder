@@ -34,20 +34,22 @@ export class CanvasCompositor {
   private pipY: number = 0; // set on ready
   private cameraSize: CameraSize = 'medium';
   private layoutMode: LayoutMode = 'pip';
-  private removeBackground = false;
+  private blurBackground = false;
 
-  // Background removal helpers
+  // Background segmentation helpers
   private segmenter: Segmenter | null = null;
   private segmenterLoading = false;
   private maskCanvas: HTMLCanvasElement;
   private maskCtx: CanvasRenderingContext2D;
   private camCanvas: HTMLCanvasElement;
   private camCtx: CanvasRenderingContext2D;
+  private blurCanvas: HTMLCanvasElement;
+  private blurCtx: CanvasRenderingContext2D;
 
   constructor(
     screenTrack: MediaStreamTrack,
     cameraTrack: MediaStreamTrack | null,
-    opts: { cameraSize?: CameraSize; removeBackground?: boolean } = {}
+    opts: { cameraSize?: CameraSize; blurBackground?: boolean; layoutMode?: LayoutMode } = {}
   ) {
     this.canvas = document.createElement('canvas');
     this.ctx = this.canvas.getContext('2d')!;
@@ -55,9 +57,12 @@ export class CanvasCompositor {
     this.maskCtx = this.maskCanvas.getContext('2d', { willReadFrequently: true })!;
     this.camCanvas = document.createElement('canvas');
     this.camCtx = this.camCanvas.getContext('2d')!;
+    this.blurCanvas = document.createElement('canvas');
+    this.blurCtx = this.blurCanvas.getContext('2d')!;
 
     this.cameraSize = opts.cameraSize ?? 'medium';
-    this.removeBackground = opts.removeBackground ?? false;
+    this.blurBackground = opts.blurBackground ?? false;
+    this.layoutMode = opts.layoutMode ?? 'pip';
 
     this.screenVideo = document.createElement('video');
     this.screenVideo.srcObject = new MediaStream([screenTrack]);
@@ -98,7 +103,7 @@ export class CanvasCompositor {
 
     this.stream = this.canvas.captureStream(60);
 
-    if (this.removeBackground) {
+    if (this.blurBackground) {
       void this.loadSegmenter();
     }
 
@@ -136,8 +141,8 @@ export class CanvasCompositor {
     this.layoutMode = mode;
   }
 
-  setRemoveBackground(enabled: boolean) {
-    this.removeBackground = enabled;
+  setBlurBackground(enabled: boolean) {
+    this.blurBackground = enabled;
     if (enabled && !this.segmenter && !this.segmenterLoading) {
       void this.loadSegmenter();
     }
@@ -213,10 +218,10 @@ export class CanvasCompositor {
     ctx.roundRect(x, y, pipW, pipH, PIP_RADIUS);
     ctx.clip();
 
-    if (this.removeBackground && this.segmenter) {
-      this.drawCameraWithMask(cam, x, y, pipW, pipH);
+    if (this.blurBackground && this.segmenter) {
+      this.drawCameraWithBlur(cam, x, y, pipW, pipH);
     } else {
-      ctx.drawImage(cam, x, y, pipW, pipH);
+      this.drawCameraCoverFit(cam, x, y, pipW, pipH);
     }
     ctx.restore();
 
@@ -231,9 +236,8 @@ export class CanvasCompositor {
     const { ctx, canvas } = this;
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
-    // Fill the canvas (cover, center-crop) with the camera
-    if (this.removeBackground && this.segmenter) {
-      this.drawCameraWithMask(cam, 0, 0, canvas.width, canvas.height);
+    if (this.blurBackground && this.segmenter) {
+      this.drawCameraWithBlur(cam, 0, 0, canvas.width, canvas.height);
     } else {
       this.drawCameraCoverFit(cam, 0, 0, canvas.width, canvas.height);
     }
@@ -259,19 +263,8 @@ export class CanvasCompositor {
     this.ctx.drawImage(cam, sx, sy, sw, sh, x, y, w, h);
   }
 
-  private drawCameraWithMask(cam: HTMLVideoElement, x: number, y: number, w: number, h: number) {
-    const { camCanvas, camCtx, maskCanvas, maskCtx, ctx, segmenter } = this;
-    if (!segmenter) {
-      this.drawCameraCoverFit(cam, x, y, w, h);
-      return;
-    }
-
-    // 1. Render the cover-fit camera into the camCanvas at the target dimensions
-    if (camCanvas.width !== w || camCanvas.height !== h) {
-      camCanvas.width = w;
-      camCanvas.height = h;
-    }
-    camCtx.clearRect(0, 0, w, h);
+  /** Compute cover-fit source rectangle for camera at target w/h. */
+  private coverFitSourceRect(cam: HTMLVideoElement, w: number, h: number) {
     const cw = cam.videoWidth || 1280;
     const ch = cam.videoHeight || 720;
     const targetRatio = w / h;
@@ -284,26 +277,57 @@ export class CanvasCompositor {
       sh = cw / targetRatio;
       sy = (ch - sh) / 2;
     }
+    return { sx, sy, sw, sh };
+  }
+
+  private drawCameraWithBlur(cam: HTMLVideoElement, x: number, y: number, w: number, h: number) {
+    const { camCanvas, camCtx, blurCanvas, blurCtx, maskCanvas, maskCtx, ctx, segmenter } = this;
+    if (!segmenter) {
+      this.drawCameraCoverFit(cam, x, y, w, h);
+      return;
+    }
+
+    // Match offscreen sizes to target
+    if (camCanvas.width !== w || camCanvas.height !== h) {
+      camCanvas.width = w; camCanvas.height = h;
+    }
+    if (blurCanvas.width !== w || blurCanvas.height !== h) {
+      blurCanvas.width = w; blurCanvas.height = h;
+    }
+
+    const { sx, sy, sw, sh } = this.coverFitSourceRect(cam, w, h);
+
+    // 1. Draw BLURRED camera as the base layer on blurCanvas.
+    //    Blur radius scales with PIP size so it looks consistent at any zoom.
+    const blurRadius = Math.max(12, Math.round(Math.min(w, h) * 0.04));
+    blurCtx.filter = `blur(${blurRadius}px)`;
+    blurCtx.clearRect(0, 0, w, h);
+    blurCtx.drawImage(cam, sx, sy, sw, sh, 0, 0, w, h);
+    blurCtx.filter = 'none';
+
+    // 2. Draw SHARP camera on camCanvas.
+    camCtx.globalCompositeOperation = 'source-over';
+    camCtx.clearRect(0, 0, w, h);
     camCtx.drawImage(cam, sx, sy, sw, sh, 0, 0, w, h);
 
-    // 2. Run segmenter on the raw camera frame
+    // 3. Get segmentation mask.
     let result;
     try {
       result = segmenter.segmentForVideo(cam, performance.now());
     } catch (e) {
       console.warn('Segmenter failed on frame:', e);
-      ctx.drawImage(camCanvas, x, y);
+      ctx.drawImage(camCanvas, x, y, w, h);
       return;
     }
-
     const mask = result?.categoryMask;
     if (!mask) {
-      ctx.drawImage(camCanvas, x, y);
+      ctx.drawImage(camCanvas, x, y, w, h);
       result?.close?.();
       return;
     }
 
-    // 3. Convert mask to alpha channel on the maskCanvas at camera resolution
+    // 4. Build alpha mask on maskCanvas (alpha 255 where person, 0 where background).
+    //    selfie_segmenter: 0 = person, 255 = background.
     const maskData = mask.getAsUint8Array();
     const mw = mask.width;
     const mh = mask.height;
@@ -311,22 +335,25 @@ export class CanvasCompositor {
       maskCanvas.width = mw;
       maskCanvas.height = mh;
     }
-
     const imgData = maskCtx.createImageData(mw, mh);
-    // selfie_segmenter mask: 0 = person, 255 = background
     for (let i = 0; i < maskData.length; i++) {
       const j = i * 4;
       const isPerson = maskData[i] === 0;
-      imgData.data[j] = 255;     // white
+      imgData.data[j] = 255;
       imgData.data[j + 1] = 255;
       imgData.data[j + 2] = 255;
-      imgData.data[j + 3] = isPerson ? 0 : 255; // background opaque white, person transparent
+      imgData.data[j + 3] = isPerson ? 255 : 0;
     }
     maskCtx.putImageData(imgData, 0, 0);
 
-    // 4. Composite: draw camera, then draw mask (white where background) on top
+    // 5. Apply the mask to camCanvas via destination-in: keeps sharp pixels only where mask is opaque (i.e. the person).
+    camCtx.globalCompositeOperation = 'destination-in';
+    camCtx.drawImage(maskCanvas, 0, 0, w, h);
+    camCtx.globalCompositeOperation = 'source-over';
+
+    // 6. Composite: blurred base, then sharp person on top.
+    ctx.drawImage(blurCanvas, x, y, w, h);
     ctx.drawImage(camCanvas, x, y, w, h);
-    ctx.drawImage(maskCanvas, x, y, w, h);
 
     mask.close?.();
     result.close?.();

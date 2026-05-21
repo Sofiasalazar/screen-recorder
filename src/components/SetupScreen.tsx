@@ -1,11 +1,16 @@
-import { Camera, Mic, MonitorUp, AlertTriangle, Sparkles } from 'lucide-react';
-import { DeviceInfo, DevicePreferences, CameraSize } from '../types';
+import { Camera, Mic, MonitorUp, AlertTriangle, Aperture, Maximize2, Minimize2 } from 'lucide-react';
+import { DeviceInfo, DevicePreferences, CameraSize, LayoutMode } from '../types';
 import { DeviceSelector } from './DeviceSelector';
 
 const SIZE_OPTIONS: { value: CameraSize; label: string }[] = [
   { value: 'small', label: 'S' },
   { value: 'medium', label: 'M' },
   { value: 'large', label: 'L' },
+];
+
+const LAYOUT_OPTIONS: { value: LayoutMode; label: string; icon: typeof Minimize2 }[] = [
+  { value: 'pip', label: 'Screen + face', icon: Minimize2 },
+  { value: 'face-full', label: 'Face only', icon: Maximize2 },
 ];
 
 interface SetupScreenProps {
@@ -88,6 +93,31 @@ export function SetupScreen({
 
               {preferences.cameraEnabled && (
                 <>
+                  {/* Layout */}
+                  <div className="space-y-2">
+                    <span className="text-sm text-brand-muted">Layout</span>
+                    <div className="grid grid-cols-2 gap-2">
+                      {LAYOUT_OPTIONS.map((opt) => {
+                        const Icon = opt.icon;
+                        const active = preferences.layoutMode === opt.value;
+                        return (
+                          <button
+                            key={opt.value}
+                            onClick={() => onPreferencesChange({ layoutMode: opt.value })}
+                            className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-sm transition-colors ${
+                              active
+                                ? 'bg-brand-violet/10 border-brand-violet/40 text-brand-text'
+                                : 'bg-brand-bg/40 border-brand-border text-brand-muted hover:border-brand-violet/40 hover:text-brand-text'
+                            }`}
+                          >
+                            <Icon className={`w-4 h-4 ${active ? 'text-brand-violet' : ''}`} />
+                            {opt.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
                   {/* Camera size */}
                   <div className="flex items-center justify-between">
                     <span className="text-sm text-brand-muted">Face size</span>
@@ -108,24 +138,24 @@ export function SetupScreen({
                     </div>
                   </div>
 
-                  {/* White background */}
+                  {/* Blur background */}
                   <button
-                    onClick={() => onPreferencesChange({ removeBackground: !preferences.removeBackground })}
+                    onClick={() => onPreferencesChange({ blurBackground: !preferences.blurBackground })}
                     className={`w-full flex items-center justify-between px-3 py-2 rounded-lg border transition-colors ${
-                      preferences.removeBackground
+                      preferences.blurBackground
                         ? 'bg-brand-violet/10 border-brand-violet/40'
                         : 'bg-brand-bg/40 border-brand-border hover:border-brand-violet/40'
                     }`}
                   >
                     <span className="flex items-center gap-2 text-sm text-brand-text">
-                      <Sparkles className="w-4 h-4 text-brand-violet" />
-                      White background
+                      <Aperture className="w-4 h-4 text-brand-violet" />
+                      Blur background
                     </span>
                     <span className={`w-9 h-5 rounded-full relative transition-colors ${
-                      preferences.removeBackground ? 'bg-brand-violet' : 'bg-brand-border'
+                      preferences.blurBackground ? 'bg-brand-violet' : 'bg-brand-border'
                     }`}>
                       <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${
-                        preferences.removeBackground ? 'left-4' : 'left-0.5'
+                        preferences.blurBackground ? 'left-4' : 'left-0.5'
                       }`} />
                     </span>
                   </button>
