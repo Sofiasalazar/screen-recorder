@@ -1,5 +1,8 @@
 export type RecordingPhase = 'setup' | 'recording' | 'paused' | 'playback';
 
+export type CameraSize = 'small' | 'medium' | 'large';
+export type LayoutMode = 'pip' | 'face-full';
+
 export interface DeviceInfo {
   deviceId: string;
   label: string;
@@ -11,4 +14,6 @@ export interface DevicePreferences {
   micId: string;
   cameraEnabled: boolean;
   micEnabled: boolean;
+  cameraSize: CameraSize;
+  removeBackground: boolean;
 }

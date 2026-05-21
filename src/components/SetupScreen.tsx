@@ -1,6 +1,12 @@
-import { Camera, Mic, MonitorUp, AlertTriangle } from 'lucide-react';
-import { DeviceInfo, DevicePreferences } from '../types';
+import { Camera, Mic, MonitorUp, AlertTriangle, Sparkles } from 'lucide-react';
+import { DeviceInfo, DevicePreferences, CameraSize } from '../types';
 import { DeviceSelector } from './DeviceSelector';
+
+const SIZE_OPTIONS: { value: CameraSize; label: string }[] = [
+  { value: 'small', label: 'S' },
+  { value: 'medium', label: 'M' },
+  { value: 'large', label: 'L' },
+];
 
 interface SetupScreenProps {
   cameras: DeviceInfo[];
@@ -79,6 +85,53 @@ export function SetupScreen({
                 onSelect={(id) => onPreferencesChange({ cameraId: id })}
                 onToggle={(on) => onPreferencesChange({ cameraEnabled: on })}
               />
+
+              {preferences.cameraEnabled && (
+                <>
+                  {/* Camera size */}
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-brand-muted">Face size</span>
+                    <div className="flex gap-1.5 rounded-lg bg-brand-bg/40 p-1 border border-brand-border">
+                      {SIZE_OPTIONS.map((opt) => (
+                        <button
+                          key={opt.value}
+                          onClick={() => onPreferencesChange({ cameraSize: opt.value })}
+                          className={`w-9 h-7 rounded text-xs font-semibold transition-colors ${
+                            preferences.cameraSize === opt.value
+                              ? 'bg-brand-violet text-white'
+                              : 'text-brand-muted hover:text-brand-text'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* White background */}
+                  <button
+                    onClick={() => onPreferencesChange({ removeBackground: !preferences.removeBackground })}
+                    className={`w-full flex items-center justify-between px-3 py-2 rounded-lg border transition-colors ${
+                      preferences.removeBackground
+                        ? 'bg-brand-violet/10 border-brand-violet/40'
+                        : 'bg-brand-bg/40 border-brand-border hover:border-brand-violet/40'
+                    }`}
+                  >
+                    <span className="flex items-center gap-2 text-sm text-brand-text">
+                      <Sparkles className="w-4 h-4 text-brand-violet" />
+                      White background
+                    </span>
+                    <span className={`w-9 h-5 rounded-full relative transition-colors ${
+                      preferences.removeBackground ? 'bg-brand-violet' : 'bg-brand-border'
+                    }`}>
+                      <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${
+                        preferences.removeBackground ? 'left-4' : 'left-0.5'
+                      }`} />
+                    </span>
+                  </button>
+                </>
+              )}
+
               <DeviceSelector
                 label="Microphone"
                 icon={<Mic className="w-4 h-4 text-brand-violet" />}
