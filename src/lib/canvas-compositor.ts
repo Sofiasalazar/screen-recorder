@@ -46,6 +46,13 @@ export class CanvasCompositor {
   private blurCanvas: HTMLCanvasElement;
   private blurCtx: CanvasRenderingContext2D;
 
+  // Temporal smoothing (EMA) for the alpha mask -- prevents edge shimmer.
+  // 0..1, higher = more responsive but less smooth. 0.5 is the sweet spot.
+  private static readonly MASK_EMA_WEIGHT = 0.5;
+  private prevAlphaArr: Uint8Array | null = null;
+  private prevAlphaW = 0;
+  private prevAlphaH = 0;
+
   constructor(
     screenTrack: MediaStreamTrack,
     cameraTrack: MediaStreamTrack | null,
@@ -164,8 +171,11 @@ export class CanvasCompositor {
       );
       const segmenter = await vision.ImageSegmenter.createFromOptions(fileset, {
         baseOptions: {
+          // Multiclass selfie segmenter: 6 classes (0=bg, 1=hair, 2=body-skin,
+          // 3=face-skin, 4=clothes, 5=others). We treat anything != 0 as
+          // foreground, which keeps hair attached to the head.
           modelAssetPath:
-            'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite',
+            'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite',
           delegate: 'GPU',
         },
         runningMode: 'VIDEO',
@@ -173,6 +183,8 @@ export class CanvasCompositor {
         outputConfidenceMasks: false,
       });
       this.segmenter = segmenter as unknown as Segmenter;
+      // Reset EMA state when (re)loading the model
+      this.prevAlphaArr = null;
     } catch (e) {
       console.warn('Failed to load segmenter, falling back to plain camera:', e);
     } finally {
@@ -287,7 +299,6 @@ export class CanvasCompositor {
       return;
     }
 
-    // Match offscreen sizes to target
     if (camCanvas.width !== w || camCanvas.height !== h) {
       camCanvas.width = w; camCanvas.height = h;
     }
@@ -297,20 +308,20 @@ export class CanvasCompositor {
 
     const { sx, sy, sw, sh } = this.coverFitSourceRect(cam, w, h);
 
-    // 1. Draw BLURRED camera as the base layer on blurCanvas.
-    //    Blur radius scales with PIP size so it looks consistent at any zoom.
+    // 1. Blurred base layer
     const blurRadius = Math.max(12, Math.round(Math.min(w, h) * 0.04));
     blurCtx.filter = `blur(${blurRadius}px)`;
     blurCtx.clearRect(0, 0, w, h);
     blurCtx.drawImage(cam, sx, sy, sw, sh, 0, 0, w, h);
     blurCtx.filter = 'none';
 
-    // 2. Draw SHARP camera on camCanvas.
+    // 2. Sharp camera
     camCtx.globalCompositeOperation = 'source-over';
+    camCtx.filter = 'none';
     camCtx.clearRect(0, 0, w, h);
     camCtx.drawImage(cam, sx, sy, sw, sh, 0, 0, w, h);
 
-    // 3. Get segmentation mask.
+    // 3. Run segmenter
     let result;
     try {
       result = segmenter.segmentForVideo(cam, performance.now());
@@ -326,8 +337,8 @@ export class CanvasCompositor {
       return;
     }
 
-    // 4. Build alpha mask on maskCanvas (alpha 255 where person, 0 where background).
-    //    selfie_segmenter: 0 = person, 255 = background.
+    // 4. Build EMA-smoothed alpha mask at the model's native resolution.
+    //    Multiclass model: 0 = background, 1-5 = foreground (hair/body/face/clothes/others).
     const maskData = mask.getAsUint8Array();
     const mw = mask.width;
     const mh = mask.height;
@@ -335,20 +346,39 @@ export class CanvasCompositor {
       maskCanvas.width = mw;
       maskCanvas.height = mh;
     }
+
+    // Reset EMA state if the mask resolution changed
+    if (!this.prevAlphaArr || this.prevAlphaW !== mw || this.prevAlphaH !== mh) {
+      this.prevAlphaArr = new Uint8Array(mw * mh);
+      this.prevAlphaW = mw;
+      this.prevAlphaH = mh;
+    }
+    const prev = this.prevAlphaArr;
+    const w1 = CanvasCompositor.MASK_EMA_WEIGHT;
+    const w0 = 1 - w1;
+
     const imgData = maskCtx.createImageData(mw, mh);
+    const pixels = imgData.data;
     for (let i = 0; i < maskData.length; i++) {
       const j = i * 4;
-      const isPerson = maskData[i] === 0;
-      imgData.data[j] = 255;
-      imgData.data[j + 1] = 255;
-      imgData.data[j + 2] = 255;
-      imgData.data[j + 3] = isPerson ? 255 : 0;
+      const newAlpha = maskData[i] !== 0 ? 255 : 0;
+      const smoothed = (w1 * newAlpha + w0 * prev[i]) | 0;
+      prev[i] = smoothed;
+      pixels[j] = 255;
+      pixels[j + 1] = 255;
+      pixels[j + 2] = 255;
+      pixels[j + 3] = smoothed;
     }
     maskCtx.putImageData(imgData, 0, 0);
 
-    // 5. Apply the mask to camCanvas via destination-in: keeps sharp pixels only where mask is opaque (i.e. the person).
+    // 5. Apply mask to sharp camera with destination-in + Gaussian blur on the
+    //    drawImage call. The blur scales with target size so the feather looks
+    //    consistent whether PIP or fullscreen.
+    const featherPx = Math.max(2, Math.round(Math.min(w, h) * 0.008));
     camCtx.globalCompositeOperation = 'destination-in';
-    camCtx.drawImage(maskCanvas, 0, 0, w, h);
+    camCtx.filter = `blur(${featherPx}px)`;
+    camCtx.drawImage(maskCanvas, 0, 0, mw, mh, 0, 0, w, h);
+    camCtx.filter = 'none';
     camCtx.globalCompositeOperation = 'source-over';
 
     // 6. Composite: blurred base, then sharp person on top.
