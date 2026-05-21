@@ -21,7 +21,8 @@ const DEFAULT_PREFS: DevicePreferences = {
   cameraEnabled: true,
   micEnabled: true,
   cameraSize: 'medium',
-  removeBackground: false,
+  blurBackground: false,
+  layoutMode: 'pip',
 };
 
 function getSupportedMimeType(): string {
@@ -121,7 +122,8 @@ export function useScreenRecorder() {
 
       const compositor = new CanvasCompositor(screenVideoTrack, cameraVideoTrack, {
         cameraSize: preferences.cameraSize,
-        removeBackground: preferences.removeBackground,
+        blurBackground: preferences.blurBackground,
+        layoutMode: preferences.layoutMode,
       });
       compositorRef.current = compositor;
 
@@ -187,7 +189,7 @@ export function useScreenRecorder() {
         recordedBlob: null,
         recordedUrl: null,
         error: null,
-        layoutMode: 'pip',
+        layoutMode: preferences.layoutMode,
         canvasWidth: compositor.width,
         canvasHeight: compositor.height,
       });

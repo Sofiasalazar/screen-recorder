@@ -15,5 +15,6 @@ export interface DevicePreferences {
   cameraEnabled: boolean;
   micEnabled: boolean;
   cameraSize: CameraSize;
-  removeBackground: boolean;
+  blurBackground: boolean;
+  layoutMode: LayoutMode;
 }
