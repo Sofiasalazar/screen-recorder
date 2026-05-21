@@ -18,6 +18,8 @@ export default function App() {
     resumeRecording,
     stopRecording,
     resetRecording,
+    toggleLayout,
+    setPipPosition,
   } = useScreenRecorder();
 
   const { cameras, microphones, permissionGranted, requestPermission, error: deviceError } = useMediaDevices();
@@ -55,9 +57,15 @@ export default function App() {
           cameraEnabled={preferences.cameraEnabled}
           isPaused={state.phase === 'paused'}
           elapsedSeconds={elapsed}
+          layoutMode={state.layoutMode}
+          cameraSize={preferences.cameraSize}
+          canvasWidth={state.canvasWidth}
+          canvasHeight={state.canvasHeight}
           onPause={pauseRecording}
           onResume={resumeRecording}
           onStop={stopRecording}
+          onToggleLayout={toggleLayout}
+          onSetPipPosition={setPipPosition}
         />
       )}
 

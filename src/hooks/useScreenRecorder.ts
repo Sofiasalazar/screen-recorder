@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback } from 'react';
-import { RecordingPhase, DevicePreferences } from '../types';
+import { RecordingPhase, DevicePreferences, CameraSize, LayoutMode } from '../types';
 import { CanvasCompositor, mergeAudioTracks } from '../lib/canvas-compositor';
 
 interface RecorderState {
@@ -10,6 +10,9 @@ interface RecorderState {
   recordedBlob: Blob | null;
   recordedUrl: string | null;
   error: string | null;
+  layoutMode: LayoutMode;
+  canvasWidth: number;
+  canvasHeight: number;
 }
 
 const DEFAULT_PREFS: DevicePreferences = {
@@ -17,6 +20,8 @@ const DEFAULT_PREFS: DevicePreferences = {
   micId: '',
   cameraEnabled: true,
   micEnabled: true,
+  cameraSize: 'medium',
+  removeBackground: false,
 };
 
 function getSupportedMimeType(): string {
@@ -47,6 +52,9 @@ export function useScreenRecorder() {
     recordedBlob: null,
     recordedUrl: null,
     error: null,
+    layoutMode: 'pip',
+    canvasWidth: 0,
+    canvasHeight: 0,
   });
 
   const [preferences, setPreferences] = useState<DevicePreferences>(DEFAULT_PREFS);
@@ -111,7 +119,10 @@ export function useScreenRecorder() {
       const screenVideoTrack = screenStream.getVideoTracks()[0];
       const cameraVideoTrack = (preferences.cameraEnabled && cameraStream?.getVideoTracks()[0]) || null;
 
-      const compositor = new CanvasCompositor(screenVideoTrack, cameraVideoTrack);
+      const compositor = new CanvasCompositor(screenVideoTrack, cameraVideoTrack, {
+        cameraSize: preferences.cameraSize,
+        removeBackground: preferences.removeBackground,
+      });
       compositorRef.current = compositor;
 
       // Wait for compositor to detect the actual capture resolution
@@ -176,6 +187,9 @@ export function useScreenRecorder() {
         recordedBlob: null,
         recordedUrl: null,
         error: null,
+        layoutMode: 'pip',
+        canvasWidth: compositor.width,
+        canvasHeight: compositor.height,
       });
     } catch (err: unknown) {
       // User cancelled screen share dialog
@@ -232,8 +246,28 @@ export function useScreenRecorder() {
       recordedBlob: null,
       recordedUrl: null,
       error: null,
+      layoutMode: 'pip',
+      canvasWidth: 0,
+      canvasHeight: 0,
     });
   }, [state.recordedUrl]);
+
+  const toggleLayout = useCallback(() => {
+    if (!compositorRef.current) return;
+    setState((s) => {
+      const next: LayoutMode = s.layoutMode === 'pip' ? 'face-full' : 'pip';
+      compositorRef.current!.setLayoutMode(next);
+      return { ...s, layoutMode: next };
+    });
+  }, []);
+
+  const setPipPosition = useCallback((x: number, y: number) => {
+    compositorRef.current?.setPipPosition(x, y);
+  }, []);
+
+  const setCameraSize = useCallback((size: CameraSize) => {
+    compositorRef.current?.setCameraSize(size);
+  }, []);
 
   return {
     state,
@@ -244,5 +278,8 @@ export function useScreenRecorder() {
     resumeRecording,
     stopRecording,
     resetRecording,
+    toggleLayout,
+    setPipPosition,
+    setCameraSize,
   };
 }
