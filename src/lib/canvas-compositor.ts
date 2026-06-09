@@ -29,6 +29,22 @@ export class CanvasCompositor {
   private destroyed = false;
   private ready: Promise<void>;
 
+  // Frame-rate gating. Driven by the actual source frame rate so we never
+  // produce frames the encoder can't consume (the cause of the 1s-on/1s-off
+  // backpressure freeze).
+  private targetFps = 30;
+  private frameInterval = 1000 / 30;
+  private lastRenderTs = 0;
+  // Toggle that halves the segmenter rate when blur is on. The EMA smoother
+  // hides the reused mask -- visually identical, half the CPU/GPU cost.
+  private segmenterTick = false;
+  // Worker that drives the render tick. Workers attached to media-active
+  // tabs are NOT throttled by Page Visibility (rAF IS), so this is what
+  // keeps the canvas redrawing even when the recorder tab is backgrounded.
+  // Falls back to rAF if Worker construction fails.
+  private tickWorker: Worker | null = null;
+  private workerBlobUrl: string | null = null;
+
   // Live-adjustable state
   private pipX: number = PIP_MARGIN;
   private pipY: number = 0; // set on ready
@@ -108,13 +124,63 @@ export class CanvasCompositor {
       }
     });
 
-    this.stream = this.canvas.captureStream(60);
+    const sourceFps = screenTrack.getSettings().frameRate ?? 30;
+    this.targetFps = Math.min(sourceFps, 30);
+    this.frameInterval = 1000 / this.targetFps;
+    this.stream = this.canvas.captureStream(this.targetFps);
 
     if (this.blurBackground) {
       void this.loadSegmenter();
     }
 
-    this.scheduleRaf();
+    this.startTickWorker();
+  }
+
+  /**
+   * Spawn a Web Worker that fires a tick message every frameInterval ms.
+   * The main thread runs render() on each tick. Workers attached to media-
+   * active tabs are NOT throttled when the host tab loses focus, so the
+   * canvas keeps being redrawn even when the recorder tab is backgrounded
+   * (this was the cause of "frozen frames after ~2 minutes" -- the rAF
+   * fallback path drops to ~1 Hz on hidden tabs).
+   *
+   * If Worker construction fails (very old browser, sandbox restriction),
+   * fall back to the existing scheduleRaf() path. Recording still works,
+   * just with the original tab-background-freeze limitation.
+   */
+  private startTickWorker() {
+    const workerCode = `let iv;self.onmessage=(e)=>{if(e.data.cmd==='start'){iv=setInterval(()=>self.postMessage(0),e.data.intervalMs)}else if(e.data.cmd==='stop'){clearInterval(iv);iv=undefined}};`;
+    try {
+      const blob = new Blob([workerCode], { type: 'application/javascript' });
+      this.workerBlobUrl = URL.createObjectURL(blob);
+      this.tickWorker = new Worker(this.workerBlobUrl);
+      this.tickWorker.onmessage = () => {
+        if (this.destroyed) return;
+        this.render(performance.now());
+      };
+      this.tickWorker.onerror = (e) => {
+        console.error('[compositor] tick worker error, falling back to rAF:', e);
+        if (this.tickWorker) {
+          try { this.tickWorker.terminate(); } catch { /* ignore */ }
+          this.tickWorker = null;
+        }
+        if (this.workerBlobUrl) {
+          URL.revokeObjectURL(this.workerBlobUrl);
+          this.workerBlobUrl = null;
+        }
+        if (!this.destroyed) this.scheduleRaf();
+      };
+      this.tickWorker.postMessage({ cmd: 'start', intervalMs: this.frameInterval });
+      console.info('[compositor] tick worker started at', this.frameInterval.toFixed(2), 'ms interval');
+    } catch (err) {
+      console.error('[compositor] failed to start tick worker, using rAF fallback:', err);
+      if (this.workerBlobUrl) {
+        URL.revokeObjectURL(this.workerBlobUrl);
+        this.workerBlobUrl = null;
+      }
+      this.tickWorker = null;
+      this.scheduleRaf();
+    }
   }
 
   whenReady(): Promise<void> {
@@ -197,8 +263,18 @@ export class CanvasCompositor {
     this.rafId = requestAnimationFrame(this.render);
   };
 
-  private render = () => {
+  private render = (ts: number) => {
     if (this.destroyed) return;
+    // Burst-recovery guard: if the main thread was blocked and multiple
+    // worker ticks queued up, cap actual rendering to the target rate.
+    // (The worker keeps ticking; we just skip extra renders this frame.)
+    // Tolerance of frameInterval * 0.8 avoids rejecting slightly-early ticks.
+    if (ts - this.lastRenderTs < this.frameInterval * 0.8) {
+      // No reschedule needed -- worker (or rAF fallback) drives the next tick.
+      if (!this.tickWorker) this.scheduleRaf();
+      return;
+    }
+    this.lastRenderTs = ts;
     const { canvas, ctx, screenVideo, cameraVideo } = this;
 
     if (this.layoutMode === 'face-full' && cameraVideo && cameraVideo.readyState >= 2) {
@@ -213,7 +289,9 @@ export class CanvasCompositor {
       }
     }
 
-    this.scheduleRaf();
+    // If we're running on the rAF fallback (worker failed to start), keep
+    // scheduling. Otherwise the worker drives the next tick.
+    if (!this.tickWorker) this.scheduleRaf();
   };
 
   private drawCameraPip(cam: HTMLVideoElement) {
@@ -321,55 +399,84 @@ export class CanvasCompositor {
     camCtx.clearRect(0, 0, w, h);
     camCtx.drawImage(cam, sx, sy, sw, sh, 0, 0, w, h);
 
-    // 3. Run segmenter
-    let result;
-    try {
-      result = segmenter.segmentForVideo(cam, performance.now());
-    } catch (e) {
-      console.warn('Segmenter failed on frame:', e);
+    // 3. Run segmenter on every other render. The EMA smoother already
+    // averages temporal noise, so reusing the previous mask for one frame
+    // is visually invisible and halves segmenter CPU/GPU cost.
+    this.segmenterTick = !this.segmenterTick;
+    const runSegmenter = this.segmenterTick || !this.prevAlphaArr;
+
+    let result: ReturnType<Segmenter['segmentForVideo']> | undefined;
+    let mask: NonNullable<ReturnType<Segmenter['segmentForVideo']>['categoryMask']> | undefined;
+    if (runSegmenter) {
+      try {
+        result = segmenter.segmentForVideo(cam, performance.now());
+      } catch (e) {
+        console.warn('Segmenter failed on frame:', e);
+        ctx.drawImage(camCanvas, x, y, w, h);
+        return;
+      }
+      mask = result?.categoryMask;
+      if (!mask) {
+        ctx.drawImage(camCanvas, x, y, w, h);
+        result?.close?.();
+        return;
+      }
+    } else if (!this.prevAlphaArr) {
+      // No prior mask to reuse -- fall back to plain camera this frame.
       ctx.drawImage(camCanvas, x, y, w, h);
-      return;
-    }
-    const mask = result?.categoryMask;
-    if (!mask) {
-      ctx.drawImage(camCanvas, x, y, w, h);
-      result?.close?.();
       return;
     }
 
     // 4. Build EMA-smoothed alpha mask at the model's native resolution.
     //    Multiclass model: 0 = background, 1-5 = foreground (hair/body/face/clothes/others).
-    const maskData = mask.getAsUint8Array();
-    const mw = mask.width;
-    const mh = mask.height;
+    //    When the segmenter was skipped this frame, reuse the stored
+    //    prevAlphaArr without updating it.
+    const mw = mask ? mask.width : this.prevAlphaW;
+    const mh = mask ? mask.height : this.prevAlphaH;
     if (maskCanvas.width !== mw || maskCanvas.height !== mh) {
       maskCanvas.width = mw;
       maskCanvas.height = mh;
     }
 
-    // Reset EMA state if the mask resolution changed
-    if (!this.prevAlphaArr || this.prevAlphaW !== mw || this.prevAlphaH !== mh) {
-      this.prevAlphaArr = new Uint8Array(mw * mh);
-      this.prevAlphaW = mw;
-      this.prevAlphaH = mh;
-    }
-    const prev = this.prevAlphaArr;
-    const w1 = CanvasCompositor.MASK_EMA_WEIGHT;
-    const w0 = 1 - w1;
+    if (mask) {
+      const maskData = mask.getAsUint8Array();
+      // Reset EMA state if the mask resolution changed
+      if (!this.prevAlphaArr || this.prevAlphaW !== mw || this.prevAlphaH !== mh) {
+        this.prevAlphaArr = new Uint8Array(mw * mh);
+        this.prevAlphaW = mw;
+        this.prevAlphaH = mh;
+      }
+      const prev = this.prevAlphaArr;
+      const w1 = CanvasCompositor.MASK_EMA_WEIGHT;
+      const w0 = 1 - w1;
 
-    const imgData = maskCtx.createImageData(mw, mh);
-    const pixels = imgData.data;
-    for (let i = 0; i < maskData.length; i++) {
-      const j = i * 4;
-      const newAlpha = maskData[i] !== 0 ? 255 : 0;
-      const smoothed = (w1 * newAlpha + w0 * prev[i]) | 0;
-      prev[i] = smoothed;
-      pixels[j] = 255;
-      pixels[j + 1] = 255;
-      pixels[j + 2] = 255;
-      pixels[j + 3] = smoothed;
+      const imgData = maskCtx.createImageData(mw, mh);
+      const pixels = imgData.data;
+      for (let i = 0; i < maskData.length; i++) {
+        const j = i * 4;
+        const newAlpha = maskData[i] !== 0 ? 255 : 0;
+        const smoothed = (w1 * newAlpha + w0 * prev[i]) | 0;
+        prev[i] = smoothed;
+        pixels[j] = 255;
+        pixels[j + 1] = 255;
+        pixels[j + 2] = 255;
+        pixels[j + 3] = smoothed;
+      }
+      maskCtx.putImageData(imgData, 0, 0);
+    } else {
+      // Re-paint the stored alpha buffer from prevAlphaArr (segmenter skipped).
+      const prev = this.prevAlphaArr!;
+      const imgData = maskCtx.createImageData(mw, mh);
+      const pixels = imgData.data;
+      for (let i = 0; i < prev.length; i++) {
+        const j = i * 4;
+        pixels[j] = 255;
+        pixels[j + 1] = 255;
+        pixels[j + 2] = 255;
+        pixels[j + 3] = prev[i];
+      }
+      maskCtx.putImageData(imgData, 0, 0);
     }
-    maskCtx.putImageData(imgData, 0, 0);
 
     // 5. Apply mask to sharp camera with destination-in + Gaussian blur on the
     //    drawImage call. The blur scales with target size so the feather looks
@@ -385,8 +492,8 @@ export class CanvasCompositor {
     ctx.drawImage(blurCanvas, x, y, w, h);
     ctx.drawImage(camCanvas, x, y, w, h);
 
-    mask.close?.();
-    result.close?.();
+    mask?.close?.();
+    result?.close?.();
   }
 
   getStream(): MediaStream {
@@ -395,6 +502,17 @@ export class CanvasCompositor {
 
   destroy() {
     this.destroyed = true;
+    // Stop + terminate the tick worker (if active) and revoke its Blob URL
+    // to avoid leaking a URL handle per recording.
+    if (this.tickWorker) {
+      try { this.tickWorker.postMessage({ cmd: 'stop' }); } catch { /* ignore */ }
+      try { this.tickWorker.terminate(); } catch { /* ignore */ }
+      this.tickWorker = null;
+    }
+    if (this.workerBlobUrl) {
+      URL.revokeObjectURL(this.workerBlobUrl);
+      this.workerBlobUrl = null;
+    }
     if (this.rafId !== null) {
       cancelAnimationFrame(this.rafId);
       this.rafId = null;

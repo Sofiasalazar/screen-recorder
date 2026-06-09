@@ -1,5 +1,6 @@
 import { Download, RotateCcw } from 'lucide-react';
 import { formatFileSize } from '../lib/format-time';
+import { generateRecordingFilename } from '../lib/file-utils';
 
 interface PlaybackScreenProps {
   recordedUrl: string;
@@ -11,9 +12,7 @@ export function PlaybackScreen({ recordedUrl, recordedBlob, onReset }: PlaybackS
   const handleDownload = () => {
     const a = document.createElement('a');
     a.href = recordedUrl;
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    const ext = recordedBlob.type.startsWith('video/mp4') ? 'mp4' : 'webm';
-    a.download = `recording-${timestamp}.${ext}`;
+    a.download = generateRecordingFilename(recordedBlob.type);
     a.click();
   };
 
