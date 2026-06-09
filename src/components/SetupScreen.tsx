@@ -1,6 +1,7 @@
-import { Camera, Mic, MonitorUp, AlertTriangle, Aperture, Maximize2, Minimize2 } from 'lucide-react';
+import { Camera, Mic, MonitorUp, AlertTriangle, Aperture, Maximize2, Minimize2, HardDrive, ShieldAlert } from 'lucide-react';
 import { DeviceInfo, DevicePreferences, CameraSize, LayoutMode } from '../types';
 import { DeviceSelector } from './DeviceSelector';
+import { canStreamToDisk } from '../lib/file-utils';
 
 const SIZE_OPTIONS: { value: CameraSize; label: string }[] = [
   { value: 'small', label: 'S' },
@@ -174,6 +175,19 @@ export function SetupScreen({
             </>
           )}
         </div>
+
+        {/* Streaming-to-disk capability notice */}
+        {canStreamToDisk ? (
+          <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-300">
+            <HardDrive className="w-4 h-4 flex-shrink-0 mt-0.5" />
+            <span>Recordings stream directly to disk &mdash; crash-safe, no memory limit. You'll be asked where to save when you click Start.</span>
+          </div>
+        ) : (
+          <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300">
+            <ShieldAlert className="w-4 h-4 flex-shrink-0 mt-0.5" />
+            <span>This browser keeps recordings in memory. Long sessions may freeze or crash &mdash; use Chrome or Edge for unlimited length.</span>
+          </div>
+        )}
 
         {/* Error */}
         {error && (
