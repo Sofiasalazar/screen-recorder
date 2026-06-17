@@ -1,5 +1,5 @@
-import { Camera, Mic, MonitorUp, AlertTriangle, Aperture, Maximize2, Minimize2, HardDrive, ShieldAlert } from 'lucide-react';
-import { DeviceInfo, DevicePreferences, CameraSize, LayoutMode } from '../types';
+import { Camera, Mic, MonitorUp, AlertTriangle, Aperture, Maximize2, Minimize2, HardDrive, ShieldAlert, Ban, Library } from 'lucide-react';
+import { DeviceInfo, DevicePreferences, CameraSize, LayoutMode, BackgroundMode } from '../types';
 import { DeviceSelector } from './DeviceSelector';
 import { canStreamToDisk } from '../lib/file-utils';
 
@@ -12,6 +12,12 @@ const SIZE_OPTIONS: { value: CameraSize; label: string }[] = [
 const LAYOUT_OPTIONS: { value: LayoutMode; label: string; icon: typeof Minimize2 }[] = [
   { value: 'pip', label: 'Screen + face', icon: Minimize2 },
   { value: 'face-full', label: 'Face only', icon: Maximize2 },
+];
+
+const BACKGROUND_OPTIONS: { value: BackgroundMode; label: string; icon: typeof Ban }[] = [
+  { value: 'none', label: 'None', icon: Ban },
+  { value: 'blur', label: 'Blur', icon: Aperture },
+  { value: 'library', label: 'Library', icon: Library },
 ];
 
 interface SetupScreenProps {
@@ -139,27 +145,37 @@ export function SetupScreen({
                     </div>
                   </div>
 
-                  {/* Blur background */}
-                  <button
-                    onClick={() => onPreferencesChange({ blurBackground: !preferences.blurBackground })}
-                    className={`w-full flex items-center justify-between px-3 py-2 rounded-lg border transition-colors ${
-                      preferences.blurBackground
-                        ? 'bg-brand-violet/10 border-brand-violet/40'
-                        : 'bg-brand-bg/40 border-brand-border hover:border-brand-violet/40'
-                    }`}
-                  >
-                    <span className="flex items-center gap-2 text-sm text-brand-text">
-                      <Aperture className="w-4 h-4 text-brand-violet" />
-                      Blur background
-                    </span>
-                    <span className={`w-9 h-5 rounded-full relative transition-colors ${
-                      preferences.blurBackground ? 'bg-brand-violet' : 'bg-brand-border'
-                    }`}>
-                      <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${
-                        preferences.blurBackground ? 'left-4' : 'left-0.5'
-                      }`} />
-                    </span>
-                  </button>
+                  {/* Background */}
+                  <div className="space-y-2">
+                    <span className="text-sm text-brand-muted">Background</span>
+                    <div className="grid grid-cols-3 gap-2">
+                      {BACKGROUND_OPTIONS.map((opt) => {
+                        const Icon = opt.icon;
+                        const active = preferences.backgroundMode === opt.value;
+                        return (
+                          <button
+                            key={opt.value}
+                            onClick={() => onPreferencesChange({ backgroundMode: opt.value })}
+                            className={`flex flex-col items-center gap-1 px-2 py-2 rounded-lg border text-xs transition-colors ${
+                              active
+                                ? 'bg-brand-violet/10 border-brand-violet/40 text-brand-text'
+                                : 'bg-brand-bg/40 border-brand-border text-brand-muted hover:border-brand-violet/40 hover:text-brand-text'
+                            }`}
+                          >
+                            <Icon className={`w-4 h-4 ${active ? 'text-brand-violet' : ''}`} />
+                            {opt.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {preferences.backgroundMode !== 'none' && (
+                      <p className="text-[11px] text-brand-muted leading-snug">
+                        {preferences.backgroundMode === 'library'
+                          ? 'Replaces your camera background with an elegant library scene. Works best with even front lighting and a real background behind you.'
+                          : 'Blurs whatever is behind you on camera. Works best with even front lighting.'}
+                      </p>
+                    )}
+                  </div>
                 </>
               )}
 

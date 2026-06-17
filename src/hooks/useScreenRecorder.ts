@@ -22,7 +22,7 @@ const DEFAULT_PREFS: DevicePreferences = {
   cameraEnabled: true,
   micEnabled: true,
   cameraSize: 'medium',
-  blurBackground: false,
+  backgroundMode: 'none',
   layoutMode: 'pip',
 };
 
@@ -174,7 +174,7 @@ export function useScreenRecorder() {
 
       const compositor = new CanvasCompositor(screenVideoTrack, cameraVideoTrack, {
         cameraSize: preferences.cameraSize,
-        blurBackground: preferences.blurBackground,
+        backgroundMode: preferences.backgroundMode,
         layoutMode: preferences.layoutMode,
       });
       compositorRef.current = compositor;
