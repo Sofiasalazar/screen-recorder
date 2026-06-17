@@ -2,6 +2,7 @@ export type RecordingPhase = 'setup' | 'recording' | 'paused' | 'playback';
 
 export type CameraSize = 'small' | 'medium' | 'large';
 export type LayoutMode = 'pip' | 'face-full';
+export type BackgroundMode = 'none' | 'blur' | 'library';
 
 export interface DeviceInfo {
   deviceId: string;
@@ -15,6 +16,6 @@ export interface DevicePreferences {
   cameraEnabled: boolean;
   micEnabled: boolean;
   cameraSize: CameraSize;
-  blurBackground: boolean;
+  backgroundMode: BackgroundMode;
   layoutMode: LayoutMode;
 }

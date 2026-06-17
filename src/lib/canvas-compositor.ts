@@ -1,4 +1,5 @@
-import { CameraSize, LayoutMode } from '../types';
+import { CameraSize, LayoutMode, BackgroundMode } from '../types';
+import bgLibraryUrl from '../assets/bg-library.webp';
 
 const SIZE_MULTIPLIERS: Record<CameraSize, number> = {
   small: 0.18,
@@ -50,11 +51,16 @@ export class CanvasCompositor {
   private pipY: number = 0; // set on ready
   private cameraSize: CameraSize = 'medium';
   private layoutMode: LayoutMode = 'pip';
-  private blurBackground = false;
+  private backgroundMode: BackgroundMode = 'none';
 
   // Background segmentation helpers
   private segmenter: Segmenter | null = null;
   private segmenterLoading = false;
+  // Virtual-background image (library scene). Loaded lazily when the
+  // 'library' mode is active; until it decodes we fall back to a blurred
+  // camera base so the person is never composited onto a blank frame.
+  private bgImage: HTMLImageElement | null = null;
+  private bgImageReady = false;
   private maskCanvas: HTMLCanvasElement;
   private maskCtx: CanvasRenderingContext2D;
   private camCanvas: HTMLCanvasElement;
@@ -72,7 +78,7 @@ export class CanvasCompositor {
   constructor(
     screenTrack: MediaStreamTrack,
     cameraTrack: MediaStreamTrack | null,
-    opts: { cameraSize?: CameraSize; blurBackground?: boolean; layoutMode?: LayoutMode } = {}
+    opts: { cameraSize?: CameraSize; backgroundMode?: BackgroundMode; layoutMode?: LayoutMode } = {}
   ) {
     this.canvas = document.createElement('canvas');
     this.ctx = this.canvas.getContext('2d')!;
@@ -84,7 +90,7 @@ export class CanvasCompositor {
     this.blurCtx = this.blurCanvas.getContext('2d')!;
 
     this.cameraSize = opts.cameraSize ?? 'medium';
-    this.blurBackground = opts.blurBackground ?? false;
+    this.backgroundMode = opts.backgroundMode ?? 'none';
     this.layoutMode = opts.layoutMode ?? 'pip';
 
     this.screenVideo = document.createElement('video');
@@ -129,8 +135,11 @@ export class CanvasCompositor {
     this.frameInterval = 1000 / this.targetFps;
     this.stream = this.canvas.captureStream(this.targetFps);
 
-    if (this.blurBackground) {
+    if (this.backgroundMode !== 'none') {
       void this.loadSegmenter();
+    }
+    if (this.backgroundMode === 'library') {
+      this.loadBackgroundImage();
     }
 
     this.startTickWorker();
@@ -214,11 +223,24 @@ export class CanvasCompositor {
     this.layoutMode = mode;
   }
 
-  setBlurBackground(enabled: boolean) {
-    this.blurBackground = enabled;
-    if (enabled && !this.segmenter && !this.segmenterLoading) {
+  setBackgroundMode(mode: BackgroundMode) {
+    this.backgroundMode = mode;
+    if (mode !== 'none' && !this.segmenter && !this.segmenterLoading) {
       void this.loadSegmenter();
     }
+    if (mode === 'library' && !this.bgImage) {
+      this.loadBackgroundImage();
+    }
+  }
+
+  private loadBackgroundImage() {
+    if (this.bgImage) return;
+    const img = new Image();
+    img.decoding = 'async';
+    img.onload = () => { this.bgImageReady = true; };
+    img.onerror = (e) => { console.warn('Failed to load library background image:', e); };
+    img.src = bgLibraryUrl;
+    this.bgImage = img;
   }
 
   private computePipSize(): { width: number; height: number } {
@@ -308,8 +330,8 @@ export class CanvasCompositor {
     ctx.roundRect(x, y, pipW, pipH, PIP_RADIUS);
     ctx.clip();
 
-    if (this.blurBackground && this.segmenter) {
-      this.drawCameraWithBlur(cam, x, y, pipW, pipH);
+    if (this.backgroundMode !== 'none' && this.segmenter) {
+      this.drawCameraWithVirtualBg(cam, x, y, pipW, pipH);
     } else {
       this.drawCameraCoverFit(cam, x, y, pipW, pipH);
     }
@@ -326,8 +348,8 @@ export class CanvasCompositor {
     const { ctx, canvas } = this;
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
-    if (this.blurBackground && this.segmenter) {
-      this.drawCameraWithBlur(cam, 0, 0, canvas.width, canvas.height);
+    if (this.backgroundMode !== 'none' && this.segmenter) {
+      this.drawCameraWithVirtualBg(cam, 0, 0, canvas.width, canvas.height);
     } else {
       this.drawCameraCoverFit(cam, 0, 0, canvas.width, canvas.height);
     }
@@ -370,7 +392,34 @@ export class CanvasCompositor {
     return { sx, sy, sw, sh };
   }
 
-  private drawCameraWithBlur(cam: HTMLVideoElement, x: number, y: number, w: number, h: number) {
+  /** Draws a still image into the (0,0,w,h) box of a context using cover-fit. */
+  private drawImageCoverFit(targetCtx: CanvasRenderingContext2D, img: HTMLImageElement, w: number, h: number) {
+    const iw = img.naturalWidth || img.width;
+    const ih = img.naturalHeight || img.height;
+    if (!iw || !ih) { return; }
+    const targetRatio = w / h;
+    const sourceRatio = iw / ih;
+    let sx = 0, sy = 0, sw = iw, sh = ih;
+    if (sourceRatio > targetRatio) {
+      sw = ih * targetRatio;
+      sx = (iw - sw) / 2;
+    } else {
+      sh = iw / targetRatio;
+      sy = (ih - sh) / 2;
+    }
+    targetCtx.imageSmoothingEnabled = true;
+    targetCtx.imageSmoothingQuality = 'high';
+    targetCtx.drawImage(img, sx, sy, sw, sh, 0, 0, w, h);
+  }
+
+  /**
+   * Composites the camera with a replaced background (blur or library image).
+   * The segmenter masks the person; the base layer behind them is either a
+   * blurred copy of the camera ('blur' mode) or the library scene ('library'
+   * mode). The masking/feathering/EMA path is identical for both -- only the
+   * base layer differs.
+   */
+  private drawCameraWithVirtualBg(cam: HTMLVideoElement, x: number, y: number, w: number, h: number) {
     const { camCanvas, camCtx, blurCanvas, blurCtx, maskCanvas, maskCtx, ctx, segmenter } = this;
     if (!segmenter) {
       this.drawCameraCoverFit(cam, x, y, w, h);
@@ -386,12 +435,18 @@ export class CanvasCompositor {
 
     const { sx, sy, sw, sh } = this.coverFitSourceRect(cam, w, h);
 
-    // 1. Blurred base layer
-    const blurRadius = Math.max(12, Math.round(Math.min(w, h) * 0.04));
-    blurCtx.filter = `blur(${blurRadius}px)`;
+    // 1. Base layer behind the person. Library image when in 'library' mode
+    //    and the image has decoded; otherwise a blurred copy of the camera
+    //    (this also serves as the 'library' fallback until the image loads).
     blurCtx.clearRect(0, 0, w, h);
-    blurCtx.drawImage(cam, sx, sy, sw, sh, 0, 0, w, h);
-    blurCtx.filter = 'none';
+    if (this.backgroundMode === 'library' && this.bgImageReady && this.bgImage) {
+      this.drawImageCoverFit(blurCtx, this.bgImage, w, h);
+    } else {
+      const blurRadius = Math.max(12, Math.round(Math.min(w, h) * 0.04));
+      blurCtx.filter = `blur(${blurRadius}px)`;
+      blurCtx.drawImage(cam, sx, sy, sw, sh, 0, 0, w, h);
+      blurCtx.filter = 'none';
+    }
 
     // 2. Sharp camera
     camCtx.globalCompositeOperation = 'source-over';
