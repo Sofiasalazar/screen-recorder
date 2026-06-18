@@ -17,7 +17,7 @@ const LAYOUT_OPTIONS: { value: LayoutMode; label: string; icon: typeof Minimize2
 const BACKGROUND_OPTIONS: { value: BackgroundMode; label: string; icon: typeof Ban }[] = [
   { value: 'none', label: 'None', icon: Ban },
   { value: 'blur', label: 'Blur', icon: Aperture },
-  { value: 'library', label: 'Library', icon: Library },
+  { value: 'library', label: 'Office', icon: Library },
 ];
 
 interface SetupScreenProps {
@@ -171,7 +171,7 @@ export function SetupScreen({
                     {preferences.backgroundMode !== 'none' && (
                       <p className="text-[11px] text-brand-muted leading-snug">
                         {preferences.backgroundMode === 'library'
-                          ? 'Replaces your camera background with an elegant library scene. Works best with even front lighting and a real background behind you.'
+                          ? 'Replaces your camera background with an elegant office scene. Works best with even, bright front lighting and a plain wall behind you.'
                           : 'Blurs whatever is behind you on camera. Works best with even front lighting.'}
                       </p>
                     )}
