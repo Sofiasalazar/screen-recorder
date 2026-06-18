@@ -1,4 +1,4 @@
-import { Camera, Mic, MonitorUp, AlertTriangle, Aperture, Maximize2, Minimize2, HardDrive, ShieldAlert, Ban, Library } from 'lucide-react';
+import { Camera, Mic, MonitorUp, AlertTriangle, Aperture, Maximize2, Minimize2, HardDrive, ShieldAlert, Ban, Library, Clapperboard } from 'lucide-react';
 import { DeviceInfo, DevicePreferences, CameraSize, LayoutMode, BackgroundMode } from '../types';
 import { DeviceSelector } from './DeviceSelector';
 import { canStreamToDisk } from '../lib/file-utils';
@@ -173,6 +173,41 @@ export function SetupScreen({
                         {preferences.backgroundMode === 'library'
                           ? 'Replaces your camera background with an elegant office scene. Works best with even, bright front lighting and a plain wall behind you.'
                           : 'Blurs whatever is behind you on camera. Works best with even front lighting.'}
+                      </p>
+                    )}
+
+                    {/* Green screen (chroma key) */}
+                    <button
+                      onClick={() => {
+                        const enabling = !preferences.chromaKey;
+                        onPreferencesChange({
+                          chromaKey: enabling,
+                          ...(enabling && preferences.backgroundMode === 'none'
+                            ? { backgroundMode: 'library' as BackgroundMode }
+                            : {}),
+                        });
+                      }}
+                      className={`w-full flex items-center justify-between px-3 py-2 rounded-lg border transition-colors ${
+                        preferences.chromaKey
+                          ? 'bg-brand-violet/10 border-brand-violet/40'
+                          : 'bg-brand-bg/40 border-brand-border hover:border-brand-violet/40'
+                      }`}
+                    >
+                      <span className="flex items-center gap-2 text-sm text-brand-text">
+                        <Clapperboard className="w-4 h-4 text-brand-violet" />
+                        Green screen
+                      </span>
+                      <span className={`w-9 h-5 rounded-full relative transition-colors ${
+                        preferences.chromaKey ? 'bg-brand-violet' : 'bg-brand-border'
+                      }`}>
+                        <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${
+                          preferences.chromaKey ? 'left-4' : 'left-0.5'
+                        }`} />
+                      </span>
+                    </button>
+                    {preferences.chromaKey && (
+                      <p className="text-[11px] text-brand-muted leading-snug">
+                        Keys out a green background by colour for a clean, crisp cutout (no eaten edges). Enable when you are sitting in front of a green screen, then pick Blur or Office above.
                       </p>
                     )}
                   </div>

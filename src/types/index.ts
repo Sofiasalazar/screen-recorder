@@ -17,5 +17,6 @@ export interface DevicePreferences {
   micEnabled: boolean;
   cameraSize: CameraSize;
   backgroundMode: BackgroundMode;
+  chromaKey: boolean;
   layoutMode: LayoutMode;
 }

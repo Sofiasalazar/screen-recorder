@@ -52,6 +52,9 @@ export class CanvasCompositor {
   private cameraSize: CameraSize = 'medium';
   private layoutMode: LayoutMode = 'pip';
   private backgroundMode: BackgroundMode = 'none';
+  // Green-screen chroma key. When on, the person is cut by colour (remove
+  // green) instead of MediaPipe segmentation -- crisp edges, no eaten face.
+  private chromaKey = false;
 
   // Background segmentation helpers
   private segmenter: Segmenter | null = null;
@@ -78,7 +81,7 @@ export class CanvasCompositor {
   constructor(
     screenTrack: MediaStreamTrack,
     cameraTrack: MediaStreamTrack | null,
-    opts: { cameraSize?: CameraSize; backgroundMode?: BackgroundMode; layoutMode?: LayoutMode } = {}
+    opts: { cameraSize?: CameraSize; backgroundMode?: BackgroundMode; chromaKey?: boolean; layoutMode?: LayoutMode } = {}
   ) {
     this.canvas = document.createElement('canvas');
     this.ctx = this.canvas.getContext('2d')!;
@@ -91,6 +94,7 @@ export class CanvasCompositor {
 
     this.cameraSize = opts.cameraSize ?? 'medium';
     this.backgroundMode = opts.backgroundMode ?? 'none';
+    this.chromaKey = opts.chromaKey ?? false;
     this.layoutMode = opts.layoutMode ?? 'pip';
 
     this.screenVideo = document.createElement('video');
@@ -135,7 +139,9 @@ export class CanvasCompositor {
     this.frameInterval = 1000 / this.targetFps;
     this.stream = this.canvas.captureStream(this.targetFps);
 
-    if (this.backgroundMode !== 'none') {
+    // AI segmentation is only needed when replacing the background WITHOUT a
+    // green screen. With chroma key on we cut by colour instead.
+    if (this.backgroundMode !== 'none' && !this.chromaKey) {
       void this.loadSegmenter();
     }
     if (this.backgroundMode === 'library') {
@@ -225,11 +231,19 @@ export class CanvasCompositor {
 
   setBackgroundMode(mode: BackgroundMode) {
     this.backgroundMode = mode;
-    if (mode !== 'none' && !this.segmenter && !this.segmenterLoading) {
+    if (mode !== 'none' && !this.chromaKey && !this.segmenter && !this.segmenterLoading) {
       void this.loadSegmenter();
     }
     if (mode === 'library' && !this.bgImage) {
       this.loadBackgroundImage();
+    }
+  }
+
+  setChromaKey(enabled: boolean) {
+    this.chromaKey = enabled;
+    // Falling back to AI segmentation (green screen off) needs the model.
+    if (!enabled && this.backgroundMode !== 'none' && !this.segmenter && !this.segmenterLoading) {
+      void this.loadSegmenter();
     }
   }
 
@@ -330,7 +344,9 @@ export class CanvasCompositor {
     ctx.roundRect(x, y, pipW, pipH, PIP_RADIUS);
     ctx.clip();
 
-    if (this.backgroundMode !== 'none' && this.segmenter) {
+    if (this.backgroundMode !== 'none' && this.chromaKey) {
+      this.drawCameraWithChroma(cam, x, y, pipW, pipH);
+    } else if (this.backgroundMode !== 'none' && this.segmenter) {
       this.drawCameraWithVirtualBg(cam, x, y, pipW, pipH);
     } else {
       this.drawCameraCoverFit(cam, x, y, pipW, pipH);
@@ -348,7 +364,9 @@ export class CanvasCompositor {
     const { ctx, canvas } = this;
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
-    if (this.backgroundMode !== 'none' && this.segmenter) {
+    if (this.backgroundMode !== 'none' && this.chromaKey) {
+      this.drawCameraWithChroma(cam, 0, 0, canvas.width, canvas.height);
+    } else if (this.backgroundMode !== 'none' && this.segmenter) {
       this.drawCameraWithVirtualBg(cam, 0, 0, canvas.width, canvas.height);
     } else {
       this.drawCameraCoverFit(cam, 0, 0, canvas.width, canvas.height);
@@ -552,6 +570,76 @@ export class CanvasCompositor {
 
     mask?.close?.();
     result?.close?.();
+  }
+
+  /**
+   * Composites the camera over the background by chroma-keying out green
+   * (green-screen mode). Cutting by colour gives crisp edges with no
+   * segmentation artefacts -- no eaten face, no halo. The base layer is the
+   * library image (or a blurred camera while it loads / in blur mode). Spill
+   * suppression is intentionally light; an evenly lit green screen keys
+   * cleanly without it.
+   */
+  private drawCameraWithChroma(cam: HTMLVideoElement, x: number, y: number, w: number, h: number) {
+    const { camCanvas, camCtx, blurCanvas, blurCtx, maskCanvas, maskCtx, ctx } = this;
+
+    if (camCanvas.width !== w || camCanvas.height !== h) { camCanvas.width = w; camCanvas.height = h; }
+    if (blurCanvas.width !== w || blurCanvas.height !== h) { blurCanvas.width = w; blurCanvas.height = h; }
+
+    const { sx, sy, sw, sh } = this.coverFitSourceRect(cam, w, h);
+
+    // 1. Base layer behind the person.
+    blurCtx.clearRect(0, 0, w, h);
+    if (this.backgroundMode === 'library' && this.bgImageReady && this.bgImage) {
+      this.drawImageCoverFit(blurCtx, this.bgImage, w, h);
+    } else {
+      const blurRadius = Math.max(12, Math.round(Math.min(w, h) * 0.04));
+      blurCtx.filter = `blur(${blurRadius}px)`;
+      blurCtx.drawImage(cam, sx, sy, sw, sh, 0, 0, w, h);
+      blurCtx.filter = 'none';
+    }
+
+    // 2. Sharp camera into camCanvas.
+    camCtx.globalCompositeOperation = 'source-over';
+    camCtx.filter = 'none';
+    camCtx.clearRect(0, 0, w, h);
+    camCtx.drawImage(cam, sx, sy, sw, sh, 0, 0, w, h);
+
+    // 3. Build the green-key alpha mask at reduced resolution (cheap; a small
+    //    feather on upscale softens the edge). Output is white RGB with alpha
+    //    = keep (opaque) for non-green, 0 for green, soft in the transition.
+    const keyW = Math.min(w, 960);
+    const keyH = Math.max(1, Math.round(keyW * h / w));
+    if (maskCanvas.width !== keyW || maskCanvas.height !== keyH) { maskCanvas.width = keyW; maskCanvas.height = keyH; }
+    maskCtx.clearRect(0, 0, keyW, keyH);
+    maskCtx.drawImage(cam, sx, sy, sw, sh, 0, 0, keyW, keyH);
+    const img = maskCtx.getImageData(0, 0, keyW, keyH);
+    const d = img.data;
+    // "greenness" = how strongly green dominates the next-strongest channel.
+    const lower = 18; // at/below -> fully keep (opaque person/foreground)
+    const upper = 70; // at/above -> fully transparent (green screen)
+    for (let i = 0; i < d.length; i += 4) {
+      const r = d[i], g = d[i + 1], b = d[i + 2];
+      const greenness = g - Math.max(r, b);
+      let a: number;
+      if (greenness >= upper) a = 0;
+      else if (greenness <= lower) a = 255;
+      else a = Math.round((255 * (upper - greenness)) / (upper - lower));
+      d[i] = 255; d[i + 1] = 255; d[i + 2] = 255; d[i + 3] = a;
+    }
+    maskCtx.putImageData(img, 0, 0);
+
+    // 4. Apply the key mask to the sharp camera with a small feather.
+    const featherPx = Math.max(1, Math.round(Math.min(w, h) * 0.003));
+    camCtx.globalCompositeOperation = 'destination-in';
+    camCtx.filter = `blur(${featherPx}px)`;
+    camCtx.drawImage(maskCanvas, 0, 0, keyW, keyH, 0, 0, w, h);
+    camCtx.filter = 'none';
+    camCtx.globalCompositeOperation = 'source-over';
+
+    // 5. Composite: background, then keyed person.
+    ctx.drawImage(blurCanvas, x, y, w, h);
+    ctx.drawImage(camCanvas, x, y, w, h);
   }
 
   getStream(): MediaStream {
