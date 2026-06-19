@@ -581,7 +581,7 @@ export class CanvasCompositor {
    * cleanly without it.
    */
   private drawCameraWithChroma(cam: HTMLVideoElement, x: number, y: number, w: number, h: number) {
-    const { camCanvas, camCtx, blurCanvas, blurCtx, maskCanvas, maskCtx, ctx } = this;
+    const { camCanvas, camCtx, blurCanvas, blurCtx, ctx } = this;
 
     if (camCanvas.width !== w || camCanvas.height !== h) { camCanvas.width = w; camCanvas.height = h; }
     if (blurCanvas.width !== w || blurCanvas.height !== h) { blurCanvas.width = w; blurCanvas.height = h; }
@@ -605,39 +605,36 @@ export class CanvasCompositor {
     camCtx.clearRect(0, 0, w, h);
     camCtx.drawImage(cam, sx, sy, sw, sh, 0, 0, w, h);
 
-    // 3. Build the green-key alpha mask at reduced resolution (cheap; a small
-    //    feather on upscale softens the edge). Output is white RGB with alpha
-    //    = keep (opaque) for non-green, 0 for green, soft in the transition.
-    const keyW = Math.min(w, 960);
-    const keyH = Math.max(1, Math.round(keyW * h / w));
-    if (maskCanvas.width !== keyW || maskCanvas.height !== keyH) { maskCanvas.width = keyW; maskCanvas.height = keyH; }
-    maskCtx.clearRect(0, 0, keyW, keyH);
-    maskCtx.drawImage(cam, sx, sy, sw, sh, 0, 0, keyW, keyH);
-    const img = maskCtx.getImageData(0, 0, keyW, keyH);
-    const d = img.data;
-    // "greenness" = how strongly green dominates the next-strongest channel.
-    const lower = 18; // at/below -> fully keep (opaque person/foreground)
-    const upper = 70; // at/above -> fully transparent (green screen)
+    // 3. Key + despill in one full-resolution pass over the sharp camera.
+    //    - alpha: keyed from "greenness" (g above the stronger of r/b) with a
+    //      soft ramp between `lower` (fully keep) and `upper` (fully cut), so
+    //      edges are anti-aliased without a separate feather.
+    //    - despill: clamp the green channel down to the next-strongest channel
+    //      on every kept pixel, so the green light bouncing onto hair/edges
+    //      (the "green aura") is neutralised instead of composited.
+    const frame = camCtx.getImageData(0, 0, w, h);
+    const d = frame.data;
+    const lower = 14; // at/below -> fully keep (opaque foreground)
+    const upper = 58; // at/above -> fully transparent (green screen)
+    const span = upper - lower;
     for (let i = 0; i < d.length; i += 4) {
-      const r = d[i], g = d[i + 1], b = d[i + 2];
-      const greenness = g - Math.max(r, b);
+      const r = d[i];
+      const g = d[i + 1];
+      const b = d[i + 2];
+      const mrb = r > b ? r : b;
+      const greenness = g - mrb;
       let a: number;
       if (greenness >= upper) a = 0;
       else if (greenness <= lower) a = 255;
-      else a = Math.round((255 * (upper - greenness)) / (upper - lower));
-      d[i] = 255; d[i + 1] = 255; d[i + 2] = 255; d[i + 3] = a;
+      else a = ((255 * (upper - greenness)) / span) | 0;
+      d[i + 3] = a;
+      // Despill: no kept pixel may stay greener than its strongest other
+      // channel. Kills the green rim/spill on edges and hair.
+      if (a > 0 && g > mrb) d[i + 1] = mrb;
     }
-    maskCtx.putImageData(img, 0, 0);
+    camCtx.putImageData(frame, 0, 0);
 
-    // 4. Apply the key mask to the sharp camera with a small feather.
-    const featherPx = Math.max(1, Math.round(Math.min(w, h) * 0.003));
-    camCtx.globalCompositeOperation = 'destination-in';
-    camCtx.filter = `blur(${featherPx}px)`;
-    camCtx.drawImage(maskCanvas, 0, 0, keyW, keyH, 0, 0, w, h);
-    camCtx.filter = 'none';
-    camCtx.globalCompositeOperation = 'source-over';
-
-    // 5. Composite: background, then keyed person.
+    // 4. Composite: background, then keyed + despilled person.
     ctx.drawImage(blurCanvas, x, y, w, h);
     ctx.drawImage(camCanvas, x, y, w, h);
   }
